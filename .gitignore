@@ -1,0 +1,6 @@
+build/
+*.o # Add object files
+*.out # Common executable output names
+trading_system # Your specific executable name
+.DS_Store # macOS specific file
+.vscode/
