@@ -1,11 +1,12 @@
 #include "core/Backtester.h"
 #include "strategies/Strategy.h"
-// Include ALL strategy headers
+// --- Include ALL strategy headers ---
 #include "strategies/MovingAverageCrossover.h"
 #include "strategies/VWAPReversion.h"
 #include "strategies/OpeningRangeBreakout.h"
 #include "strategies/MomentumIgnition.h"
-#include "strategies/PairsTrading.h" // <-- Include new strategy
+#include "strategies/PairsTrading.h"
+#include "strategies/LeadLagStrategy.h"
 
 #include <iostream>
 #include <string>
@@ -14,120 +15,213 @@
 #include <stdexcept>
 #include <map>
 #include <iomanip>
+#include <functional> // For std::function
+#include <filesystem> // For checking data dir existence
 
-// StrategyResult struct (defined in Portfolio.h now)
+// --- StrategyResult struct defined in Portfolio.h ---
 #include "core/Portfolio.h" // Make sure this is included
+
+// --- Helper Function to Build Data Path ---
+std::string build_data_path(const std::string& base_dir, const std::string& subdir_name) {
+    std::filesystem::path path = std::filesystem::path(base_dir) / subdir_name;
+    return path.string();
+}
 
 
 int main(int argc, char* argv[]) {
-    std::cout << "--- HFT Backtesting System - Multi-Strategy Run ---" << std::endl;
+    // --- UPDATED TITLE ---
+    std::cout << "--- HFT Backtesting System - Comprehensive Multi-Strategy & Multi-Dataset Run ---" << std::endl;
 
     // --- Configuration ---
-    std::string data_dir = "../data";
+    std::string data_base_dir = "../data";
     double initial_cash = 100000.0;
 
-    // --- Define Strategies and Parameters ---
-    // Use a struct or map to hold strategy configurations cleanly
-    struct StrategyConfig {
-         std::string name;
-         std::function<std::unique_ptr<Strategy>()> factory; // Function to create strategy
+    // --- Define Datasets to Test ---
+    std::vector<std::string> datasets_to_test = {
+        "stocks_april",
+        "2024_only",
+        "2024_2025"
     };
 
-    std::vector<StrategyConfig> strategies_to_test;
-
-    // Add standard strategies
-    strategies_to_test.push_back({"MACrossover_5_20", [](){ return std::make_unique<MovingAverageCrossover>(5, 20, 100.0); }});
-    strategies_to_test.push_back({"VWAP_2.0", [](){ return std::make_unique<VWAPReversion>(2.0, 100.0); }});
-    strategies_to_test.push_back({"ORB_30", [](){ return std::make_unique<OpeningRangeBreakout>(30, 100.0); }});
-    strategies_to_test.push_back({"Momentum_5_10_2_3", [](){ return std::make_unique<MomentumIgnition>(5, 10, 2.0, 3, 100.0); }});
-
-    // --- Add Pairs Trading Strategies ---
-    // Use the actual symbol names derived from your filenames
-    std::string msft_sym = "quant_seconds_data_MSFT";
-    std::string nvda_sym = "quant_seconds_data_NVDA";
-    std::string goog_sym = "quant_seconds_data_google";
-    double pairs_trade_value = 10000.0; // $ value per leg
-    size_t pairs_lookback = 60; // Lookback window (e.g., 60 minutes)
-    double pairs_entry_z = 2.0;
-    double pairs_exit_z = 0.5;
-
-    strategies_to_test.push_back({"Pairs_MSFT_NVDA", [&](){ return std::make_unique<PairsTrading>(msft_sym, nvda_sym, pairs_lookback, pairs_entry_z, pairs_exit_z, pairs_trade_value); }});
-    strategies_to_test.push_back({"Pairs_NVDA_GOOG", [&](){ return std::make_unique<PairsTrading>(nvda_sym, goog_sym, pairs_lookback, pairs_entry_z, pairs_exit_z, pairs_trade_value); }});
-    strategies_to_test.push_back({"Pairs_MSFT_GOOG", [&](){ return std::make_unique<PairsTrading>(msft_sym, goog_sym, pairs_lookback, pairs_entry_z, pairs_exit_z, pairs_trade_value); }});
+    // --- Map to Store All Results ---
+    // Key: Combined name like "StrategyName_on_DataSetName"
+    std::map<std::string, StrategyResult> all_results;
 
 
-    // --- Map to Store Results ---
-    std::map<std::string, StrategyResult> results;
+    // --- OUTER LOOP: Iterate Through Datasets ---
+    for (const std::string& target_dataset_subdir : datasets_to_test) {
 
-    // --- Loop Through Strategies ---
-    for (const auto& config : strategies_to_test) {
-        std::cout << "\n\n===== Running Strategy: " << config.name << " =====" << std::endl;
+        std::cout << "\n\n ///////////////////////////////////////////////////////////" << std::endl;
+        std::cout << " ///// Starting Tests for Dataset: " << target_dataset_subdir << " /////" << std::endl;
+        std::cout << " ///////////////////////////////////////////////////////////" << std::endl;
 
-        std::unique_ptr<Strategy> strategy = nullptr;
-        try {
-             strategy = config.factory(); // Create strategy using the factory function
-        } catch (const std::exception& e) { // Catch potential errors from factory/constructor
-            std::cerr << "Error creating strategy '" << config.name << "': " << e.what() << ". Skipping." << std::endl;
-            continue;
+
+        // --- Build Final Data Path & Check Existence ---
+        std::string data_path = build_data_path(data_base_dir, target_dataset_subdir);
+        std::cout << "Using data path: " << data_path << std::endl;
+        if (!std::filesystem::exists(data_path) || !std::filesystem::is_directory(data_path)) {
+            std::cerr << "ERROR: Data directory '" << data_path << "' not found. Skipping dataset." << std::endl;
+            continue; // Skip to the next dataset
         }
 
-        if (!strategy) {
-             std::cerr << "Error: Failed to instantiate strategy '" << config.name << "'. Skipping." << std::endl;
-             continue;
-        }
+        // --- Define Symbol Names BASED ON CURRENT DATASET ---
+        // Reset symbols for each dataset iteration
+        std::string msft_sym = "", nvda_sym = "", goog_sym = "";
+        std::string btc_sym = "", eth_sym = "", sol_sym = "", ada_sym = "";
 
-        // Create a new Backtester for each run to reset state
-        Backtester backtester(data_dir, std::move(strategy), initial_cash);
-        Portfolio const* result_portfolio = nullptr;
-
-        try {
-            result_portfolio = backtester.run_and_get_portfolio();
-        } catch (const std::exception& e) {
-            std::cerr << "FATAL ERROR during backtest for '" << config.name << "': " << e.what() << std::endl;
-            continue;
-        } catch (...) {
-            std::cerr << "FATAL UNKNOWN ERROR during backtest for '" << config.name << "'." << std::endl;
-            continue;
-        }
-
-        // Store results
-        if (result_portfolio) {
-            results[config.name] = result_portfolio->get_results_summary();
+        if (target_dataset_subdir == "stocks_april") {
+            std::cout << "Loading symbols for dataset: stocks_april" << std::endl;
+            msft_sym = "quant_seconds_data_MSFT";
+            nvda_sym = "quant_seconds_data_NVDA";
+            goog_sym = "quant_seconds_data_google";
+        } else if (target_dataset_subdir == "2024_only") {
+            std::cout << "Loading symbols for dataset: 2024_only" << std::endl;
+            btc_sym = "btc_2024_data";
+            eth_sym = "eth_2024_data";
+            sol_sym = "sol_2024_data";
+            ada_sym = "ada_2024_data";
+        } else if (target_dataset_subdir == "2024_2025") {
+            std::cout << "Loading symbols for dataset: 2024_2025" << std::endl;
+            btc_sym = "2024_to_april_2025_btc_data";
+            eth_sym = "2024_to_april_2025_eth_data";
+            sol_sym = "2024_to_april_2025_solana_data"; // Match exact filename stem
+            ada_sym = "2024_to_april_2025_ada_data";
         } else {
-             std::cerr << "Warning: Backtest ran but portfolio pointer was null for " << config.name << "." << std::endl;
+            std::cerr << "Warning: Unknown dataset subdirectory '" << target_dataset_subdir << "' encountered in loop logic." << std::endl;
+            continue; // Skip dataset
         }
-        std::cout << "===== Finished Strategy: " << config.name << " =====" << std::endl;
-    } // End loop
+
+        // --- Define All Available Strategy Configurations FOR THIS DATASET ITERATION ---
+        // Need to redefine inside loop because lambda captures [&] use current symbol values
+        struct StrategyConfig {
+            std::string name;
+            std::function<std::unique_ptr<Strategy>()> factory;
+            std::vector<std::string> required_datasets; // Datasets this config applies to
+        };
+        std::vector<StrategyConfig> available_strategies_this_iteration;
+
+        // Define standard strategies (always applicable if dataset has OHLCV)
+        available_strategies_this_iteration.push_back({"MACrossover_5_20", [](){ return std::make_unique<MovingAverageCrossover>(5, 20, 100.0); }, {"stocks_april", "2024_only", "2024_2025"}});
+        available_strategies_this_iteration.push_back({"VWAP_2.0", [](){ return std::make_unique<VWAPReversion>(2.0, 100.0); }, {"stocks_april", "2024_only", "2024_2025"}});
+        available_strategies_this_iteration.push_back({"ORB_30", [](){ return std::make_unique<OpeningRangeBreakout>(30, 100.0); }, {"stocks_april", "2024_only", "2024_2025"}});
+        available_strategies_this_iteration.push_back({"Momentum_5_10_2_3", [](){ return std::make_unique<MomentumIgnition>(5, 10, 2.0, 3, 100.0); }, {"stocks_april", "2024_only", "2024_2025"}});
+
+        // Define Pairs Trading - capture CURRENT symbols correctly using [&]
+        double pairs_trade_value = 10000.0; size_t pairs_lookback = 60; double pairs_entry_z = 2.0, pairs_exit_z = 0.5;
+        available_strategies_this_iteration.push_back({"Pairs_MSFT_NVDA", [&](){ return std::make_unique<PairsTrading>(msft_sym, nvda_sym, pairs_lookback, pairs_entry_z, pairs_exit_z, pairs_trade_value); }, {"stocks_april"}});
+        available_strategies_this_iteration.push_back({"Pairs_NVDA_GOOG", [&](){ return std::make_unique<PairsTrading>(nvda_sym, goog_sym, pairs_lookback, pairs_entry_z, pairs_exit_z, pairs_trade_value); }, {"stocks_april"}});
+        available_strategies_this_iteration.push_back({"Pairs_MSFT_GOOG", [&](){ return std::make_unique<PairsTrading>(msft_sym, goog_sym, pairs_lookback, pairs_entry_z, pairs_exit_z, pairs_trade_value); }, {"stocks_april"}});
+        available_strategies_this_iteration.push_back({"Pairs_BTC_ETH", [&](){ return std::make_unique<PairsTrading>(btc_sym, eth_sym, pairs_lookback, pairs_entry_z, pairs_exit_z, pairs_trade_value); }, {"2024_only", "2024_2025"}});
+        available_strategies_this_iteration.push_back({"Pairs_ETH_SOL", [&](){ return std::make_unique<PairsTrading>(eth_sym, sol_sym, pairs_lookback, pairs_entry_z, pairs_exit_z, pairs_trade_value); }, {"2024_only", "2024_2025"}});
+        available_strategies_this_iteration.push_back({"Pairs_BTC_SOL", [&](){ return std::make_unique<PairsTrading>(btc_sym, sol_sym, pairs_lookback, pairs_entry_z, pairs_exit_z, pairs_trade_value); }, {"2024_only", "2024_2025"}});
+        available_strategies_this_iteration.push_back({"Pairs_ETH_ADA", [&](){ return std::make_unique<PairsTrading>(eth_sym, ada_sym, pairs_lookback, pairs_entry_z, pairs_exit_z, pairs_trade_value); }, {"2024_only", "2024_2025"}});
+        available_strategies_this_iteration.push_back({"Pairs_SOL_ADA", [&](){ return std::make_unique<PairsTrading>(sol_sym, ada_sym, pairs_lookback, pairs_entry_z, pairs_exit_z, pairs_trade_value); }, {"2024_only", "2024_2025"}}); // Added missing SOL/ADA pair
+
+        // Define Lead-Lag Strategies - capture CURRENT symbols
+        size_t leadlag_window = 30; size_t leadlag_lag = 1; double leadlag_corr = 0.5, leadlag_ret = 0.0002, leadlag_size = 100.0;
+        available_strategies_this_iteration.push_back({"LeadLag_MSFT->NVDA", [&](){ return std::make_unique<LeadLagStrategy>(msft_sym, nvda_sym, leadlag_window, leadlag_lag, leadlag_corr, leadlag_ret, leadlag_size); }, {"stocks_april"}});
+        available_strategies_this_iteration.push_back({"LeadLag_NVDA->MSFT", [&](){ return std::make_unique<LeadLagStrategy>(nvda_sym, msft_sym, leadlag_window, leadlag_lag, leadlag_corr, leadlag_ret, leadlag_size); }, {"stocks_april"}});
+        available_strategies_this_iteration.push_back({"LeadLag_BTC->ETH", [&](){ return std::make_unique<LeadLagStrategy>(btc_sym, eth_sym, leadlag_window, leadlag_lag, leadlag_corr, leadlag_ret, leadlag_size); }, {"2024_only", "2024_2025"}});
+        available_strategies_this_iteration.push_back({"LeadLag_ETH->BTC", [&](){ return std::make_unique<LeadLagStrategy>(eth_sym, btc_sym, leadlag_window, leadlag_lag, leadlag_corr, leadlag_ret, leadlag_size); }, {"2024_only", "2024_2025"}});
+        available_strategies_this_iteration.push_back({"LeadLag_ETH->SOL", [&](){ return std::make_unique<LeadLagStrategy>(eth_sym, sol_sym, leadlag_window, leadlag_lag, leadlag_corr, leadlag_ret, leadlag_size); }, {"2024_only", "2024_2025"}});
+        available_strategies_this_iteration.push_back({"LeadLag_SOL->ETH", [&](){ return std::make_unique<LeadLagStrategy>(sol_sym, eth_sym, leadlag_window, leadlag_lag, leadlag_corr, leadlag_ret, leadlag_size); }, {"2024_only", "2024_2025"}});
 
 
-    // --- Print Comparison Table ---
-    std::cout << "\n\n===== Strategy Comparison Results =====" << std::endl;
-    std::cout << std::left << std::setw(25) << "Strategy" // Wider column for names
-              << std::right << std::setw(15) << "Return (%)"
-              << std::right << std::setw(15) << "Max DD (%)"
-              << std::right << std::setw(15) << "Realized PnL"
-              << std::right << std::setw(15) << "Commission"
-              << std::right << std::setw(10) << "Fills"
-              << std::right << std::setw(18) << "Final Equity"
-              << std::endl;
-    std::cout << std::string(113, '-') << std::endl; // Adjust separator width
+        // --- Filter strategies applicable to the CURRENT dataset ---
+        std::vector<StrategyConfig> strategies_to_run_this_dataset;
+        for (const auto& config : available_strategies_this_iteration) {
+             bool applicable = false;
+             for (const auto& ds_name : config.required_datasets) {
+                 if (ds_name == target_dataset_subdir) {
+                     applicable = true;
+                     break;
+                 }
+             }
+             if (applicable) {
+                 strategies_to_run_this_dataset.push_back(config);
+             }
+        }
 
-    for (const auto& pair : results) {
-        const std::string& name = pair.first;
-        const StrategyResult& res = pair.second;
-        std::cout << std::left << std::setw(25) << name
-                  << std::fixed << std::setprecision(2)
-                  << std::right << std::setw(15) << res.total_return_pct
-                  << std::right << std::setw(15) << res.max_drawdown_pct
-                  << std::right << std::setw(15) << res.realized_pnl
-                  << std::right << std::setw(15) << res.total_commission
-                  << std::right << std::setw(10) << res.num_fills
-                  << std::right << std::setw(18) << res.final_equity
+        if (strategies_to_run_this_dataset.empty()) {
+            std::cout << "No applicable strategies found for dataset '" << target_dataset_subdir << "'. Skipping dataset." << std::endl;
+            continue;
+        }
+         std::cout << "Preparing to run " << strategies_to_run_this_dataset.size() << " strategies for dataset '" << target_dataset_subdir << "'." << std::endl;
+
+
+        // --- INNER LOOP: Iterate Through Applicable Strategies for this Dataset ---
+        for (const auto& config : strategies_to_run_this_dataset) {
+            std::cout << "\n\n===== Running Strategy: " << config.name << " on Dataset: " << target_dataset_subdir << " =====" << std::endl;
+
+            std::unique_ptr<Strategy> strategy = nullptr;
+            try {
+                 strategy = config.factory(); // Create strategy using the factory
+            } catch (const std::exception& e) {
+                std::cerr << "Error creating strategy '" << config.name << "': " << e.what() << ". Skipping." << std::endl;
+                continue; // Skip to next strategy
+            }
+            if (!strategy) { continue; } // Should not happen with factory, but safety check
+
+            // Create a new Backtester for each specific run
+            Backtester backtester(data_path, std::move(strategy), initial_cash);
+            Portfolio const* result_portfolio = nullptr;
+
+            try {
+                result_portfolio = backtester.run_and_get_portfolio();
+            } catch (const std::exception& e) {
+                std::cerr << "FATAL ERROR during backtest for '" << config.name << "' on '" << target_dataset_subdir << "': " << e.what() << std::endl;
+                continue; // Skip to next strategy
+            } catch (...) {
+                std::cerr << "FATAL UNKNOWN ERROR during backtest for '" << config.name << "' on '" << target_dataset_subdir << "'." << std::endl;
+                continue; // Skip to next strategy
+            }
+
+            // Store results using a combined key
+            if (result_portfolio) {
+                std::string result_key = config.name + "_on_" + target_dataset_subdir;
+                all_results[result_key] = result_portfolio->get_results_summary();
+            } else {
+                 std::cerr << "Warning: Backtest ran but portfolio pointer was null for " << config.name << " on " << target_dataset_subdir << "." << std::endl;
+            }
+            std::cout << "===== Finished Strategy: " << config.name << " on " << target_dataset_subdir << " =====" << std::endl;
+
+        } // End INNER strategy loop
+
+    } // End OUTER dataset loop
+
+
+    // --- Print Combined Comparison Table ---
+    if (!all_results.empty()) {
+        std::cout << "\n\n===== COMBINED Strategy Comparison Results =====" << std::endl;
+        std::cout << std::left << std::setw(50) << "Strategy (on Dataset)" // Wider column for combined name
+                  << std::right << std::setw(15) << "Return (%)"
+                  << std::right << std::setw(15) << "Max DD (%)"
+                  << std::right << std::setw(15) << "Realized PnL"
+                  << std::right << std::setw(15) << "Commission"
+                  << std::right << std::setw(10) << "Fills"
+                  << std::right << std::setw(18) << "Final Equity"
                   << std::endl;
+        std::cout << std::string(138, '-') << std::endl; // Adjust separator width
+
+        for (const auto& pair : all_results) {
+            const std::string& name = pair.first; // Combined name
+            const StrategyResult& res = pair.second;
+            std::cout << std::left << std::setw(50) << name // Wider column
+                      << std::fixed << std::setprecision(2)
+                      << std::right << std::setw(15) << res.total_return_pct
+                      << std::right << std::setw(15) << res.max_drawdown_pct
+                      << std::right << std::setw(15) << res.realized_pnl
+                      << std::right << std::setw(15) << res.total_commission
+                      << std::right << std::setw(10) << res.num_fills
+                      << std::right << std::setw(18) << res.final_equity
+                      << std::endl;
+        }
+        std::cout << std::string(138, '=') << std::endl; // Adjust end separator
+    } else {
+         std::cout << "\nNo strategy results to display." << std::endl;
     }
-    std::cout << "============================================" << std::endl; // Adjust end separator
 
 
-    std::cout << "\n--- Multi-Strategy Run Invocation Complete ---" << std::endl;
+    std::cout << "\n--- Comprehensive Run Invocation Complete ---" << std::endl;
     return 0;
 }
