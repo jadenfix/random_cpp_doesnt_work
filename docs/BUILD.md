@@ -34,6 +34,13 @@ Each CSV now supplies its own column mapping. Files in the same dataset may
 reorder columns or include additional numeric fields; price and timestamp
 columns are read from that file's header. Empty or duplicate column names and
 missing required date/time/close columns reject the load. The additional CTest
-case checks six schema scenarios through the production reader and runs the
-backtester on the valid two-file cases. It does not validate strategy returns
-or all malformed numeric/date inputs.
+case checks schema and input-integrity scenarios through the production reader
+and the backtester executable. Numeric fields must contain a complete finite
+number; OHLC prices must be positive and volume nonnegative. Signed auxiliary
+numeric fields and zero volume are allowed. Empty/header-only files, malformed
+row widths, unparseable timestamps and invalid numbers reject the entire load
+and clear its partial event stream. Blank trailing lines are ignored. Invalid
+rows are never converted to zero or silently excluded from a successful replay.
+
+These checks do not validate strategy returns, calendar normalization/timezone
+semantics, OHLC cross-field consistency, or the DRL prototype.
