@@ -24,11 +24,12 @@ class CsvHeaderTests(unittest.TestCase):
         self.headers = list(self.rows[0])
         self.write_file("btc_2024_data", self.headers)
 
-    def write_file(self, symbol, headers):
+    def write_file(self, symbol, headers, rows=None):
         with (self.dataset / (symbol + ".csv")).open("w", newline="") as stream:
             writer = csv.writer(stream, lineterminator="\n")
             writer.writerow(headers)
-            writer.writerows([[row.get(key, "1.0") for key in headers] for row in self.rows])
+            writer.writerows([[row.get(key, "1.0") for key in headers]
+                              for row in (self.rows if rows is None else rows)])
 
     def probe(self):
         return subprocess.run([str(PROBE), str(self.dataset)], capture_output=True,
@@ -77,6 +78,63 @@ class CsvHeaderTests(unittest.TestCase):
         result = self.probe()
         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("missing required", result.stderr)
+
+    def check_invalid_row(self, key, value):
+        rows = [dict(row) for row in self.rows]
+        rows[-1][key] = value
+        self.write_file("btc_2024_data", self.headers, rows)
+        self.check_rejection()
+
+    def check_rejection(self):
+        result = self.probe()
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("REJECTED_EMPTY", result.stdout)
+        run = subprocess.run([str(BACKTESTER), str(self.root)], capture_output=True,
+                             text=True, timeout=30)
+        self.assertNotEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertIn("No backtests completed", run.stderr)
+
+    def test_invalid_numeric_text_rejected(self):
+        self.check_invalid_row("close", "not-a-number")
+
+    def test_numeric_suffix_rejected(self):
+        self.check_invalid_row("close", "42391.03oops")
+
+    def test_nonfinite_prices_rejected(self):
+        for value in ("nan", "inf", "-inf", "1e9999"):
+            with self.subTest(value=value):
+                self.check_invalid_row("close", value)
+
+    def test_nonpositive_prices_rejected(self):
+        for value in ("0", "-1"):
+            with self.subTest(value=value):
+                self.check_invalid_row("close", value)
+
+    def test_negative_volume_rejected(self):
+        self.check_invalid_row("volume", "-1")
+
+    def test_invalid_timestamp_rejected(self):
+        self.check_invalid_row("time_only", "invalid-time")
+
+    def test_incomplete_row_rejected(self):
+        with (self.dataset / "btc_2024_data.csv").open("a") as stream:
+            stream.write("1,2\n")
+        self.check_rejection()
+
+    def test_empty_file_rejected(self):
+        (self.dataset / "empty.csv").write_text("")
+        self.check_rejection()
+
+    def test_header_only_file_rejected(self):
+        self.write_file("empty", self.headers, [])
+        self.check_rejection()
+
+    def test_zero_volume_and_signed_extra_field_allowed(self):
+        for row in self.rows:
+            row["volume"] = "0"
+            row["signed_extra"] = "-1.5"
+        self.write_file("btc_2024_data", self.headers + ["signed_extra"])
+        self.check_prices(self.headers + ["signed_extra"])
 
 
 if __name__ == "__main__":

@@ -14,6 +14,7 @@
 #include <ctime>           // For std::tm, std::mktime, std::gmtime
 #include <filesystem>      // <<< NEED THIS for directory iteration
 #include <algorithm>       // <<< NEED THIS for std::sort and std::transform
+#include <cmath>
 #include <cctype>          // <<< NEED THIS for std::tolower
 
 #include <csv2/reader.hpp> // Include csv2 header
@@ -106,12 +107,27 @@ namespace Backtester {
                 }
                 const std::string& cell_value_str = cells[i];
                 try {
-                    // Attempt conversion to double for OHLCV columns
-                    // Store using the exact header name found in the file
-                    snapshot[col_name] = std::stod(cell_value_str);
-                } catch (...) {
-                     std::cerr << "Warning: Could not parse numeric value for column '" << col_name << "' value '" << cell_value_str << "' in " << symbol_for_this_row << ". Using 0.0." << std::endl;
-                     snapshot[col_name] = 0.0;
+                    size_t consumed = 0;
+                    const double value = std::stod(cell_value_str, &consumed);
+                    while (consumed < cell_value_str.size() &&
+                           std::isspace(static_cast<unsigned char>(cell_value_str[consumed]))) {
+                        ++consumed;
+                    }
+                    if (consumed != cell_value_str.size() || !std::isfinite(value)) {
+                        throw std::runtime_error("expected a complete finite number");
+                    }
+                    std::string lower_name = col_name;
+                    std::transform(lower_name.begin(), lower_name.end(), lower_name.begin(),
+                                   [](unsigned char c) { return std::tolower(c); });
+                    const bool price_column = lower_name == "open" || lower_name == "high" ||
+                                              lower_name == "low" || lower_name == "close";
+                    if ((price_column && value <= 0.0) || (lower_name == "volume" && value < 0.0)) {
+                        throw std::runtime_error("prices must be positive and volume nonnegative");
+                    }
+                    snapshot[col_name] = value;
+                } catch (const std::exception& error) {
+                    throw std::runtime_error("Invalid numeric column '" + col_name +
+                                             "' in " + symbol_for_this_row + ": " + error.what());
                 }
             } // End loop over header_names_
 
@@ -153,10 +169,16 @@ namespace Backtester {
             header_names_.clear();
             long total_loaded_rows = 0;
             long total_skipped_rows = 0;
+            // Failed loads must never expose a prefix of an invalid dataset.
+            auto fail_load = [this]() {
+                all_parsed_data_.clear();
+                current_row_index_ = 0;
+                return false;
+            };
 
             try {
                 fs::path dirPath(data_directory_path_);
-                if (!fs::exists(dirPath) || !fs::is_directory(dirPath)) { /* ... error ... */ return false; }
+                if (!fs::exists(dirPath) || !fs::is_directory(dirPath)) { /* ... error ... */ return fail_load(); }
                 std::cout << "DataManager: Loading data from directory: " << data_directory_path_ << std::endl;
 
                 for (const auto& entry : fs::directory_iterator(dirPath)) {
@@ -174,8 +196,14 @@ namespace Backtester {
                                            csv2::first_row_is_header<true>,
                                            csv2::trim_policy::trim_whitespace> csv_reader;
 
-                              if (!csv_reader.mmap(file_path.string())) { /* ... skip ... */ continue; }
-                              if (csv_reader.rows() == 0) { /* ... skip ... */ continue; }
+                              if (!csv_reader.mmap(file_path.string())) {
+                                  std::cerr << "Error: Cannot read CSV file '" << file_path.filename().string() << "'." << std::endl;
+                                  return fail_load();
+                              }
+                              if (csv_reader.rows() == 0) {
+                                  std::cerr << "Error: CSV file '" << file_path.filename().string() << "' is empty." << std::endl;
+                                  return fail_load();
+                              }
 
                               // Each file owns its column mapping. Equal column counts
                               // do not imply equal order or meaning across symbols.
@@ -188,7 +216,7 @@ namespace Backtester {
                                       if (name.empty() || !header_map_.emplace(name, header_names_.size()).second) {
                                           std::cerr << "Error: CSV file '" << file_path.filename().string()
                                                     << "' has an empty or duplicate column name. Aborting load." << std::endl;
-                                          return false;
+                                          return fail_load();
                                       }
                                       header_names_.push_back(name);
                                   }
@@ -196,12 +224,12 @@ namespace Backtester {
                                       (!header_map_.count("Close") && !header_map_.count("close"))) {
                                       std::cerr << "Error: CSV file '" << file_path.filename().string()
                                                 << "' is missing required 'date_only', 'time_only', and 'Close'/'close' columns. Aborting load." << std::endl;
-                                      return false;
+                                      return fail_load();
                                   }
                               } catch (const std::exception& error) {
                                   std::cerr << "Error: Could not read CSV header in '"
                                             << file_path.filename().string() << "': " << error.what() << std::endl;
-                                  return false;
+                                  return fail_load();
                               }
                               std::cout << "      Header processed (" << header_names_.size()
                                         << " columns) for this file." << std::endl;
@@ -216,20 +244,42 @@ namespace Backtester {
                                     bool cell_read_error = false; size_t actual_cell_count = 0;
                                     try { for(const auto& cell : row) { std::string value; cell.read_value(value); current_row_cells.push_back(value); actual_cell_count++; } }
                                     catch(...) { cell_read_error = true; }
-                                    if(cell_read_error || actual_cell_count != header_names_.size()) { file_rows_skipped++; continue; }
+                                    // csv2 exposes a trailing blank line as zero or one empty cell.
+                                    if (!cell_read_error && (actual_cell_count == 0 ||
+                                        (actual_cell_count == 1 && current_row_cells[0].empty()))) continue;
+                                    if(cell_read_error || actual_cell_count != header_names_.size()) {
+                                        std::cerr << "Error: Invalid column count at row " << current_physical_row
+                                                  << " in '" << file_path.filename().string() << "'." << std::endl;
+                                        file_rows_skipped++;
+                                        continue;
+                                    }
                                     try { all_parsed_data_.push_back(parse_row_cells_to_event(current_row_cells, current_symbol)); file_rows_parsed++; }
-                                    catch(const std::exception& parse_ex) { file_rows_skipped++; /* Log */ continue; }
+                                    catch(const std::exception& parse_ex) {
+                                        file_rows_skipped++;
+                                        std::cerr << "Error: Invalid row " << current_physical_row << " in '"
+                                                  << file_path.filename().string() << "': " << parse_ex.what() << std::endl;
+                                    }
                               }
                               std::cout << "      Parsed " << file_rows_parsed << " rows (skipped " << file_rows_skipped << ") for " << current_symbol << "." << std::endl;
+                              if (file_rows_parsed == 0) {
+                                  std::cerr << "Error: CSV file '" << file_path.filename().string()
+                                            << "' has no valid observations." << std::endl;
+                                  return fail_load();
+                              }
                               total_loaded_rows += file_rows_parsed;
                               total_skipped_rows += file_rows_skipped;
                           } // End if ".csv"
                      } // End if regular file
                 } // End loop over directory entries
 
-            } catch (const std::exception& e) { /* ... */ return false; }
+            } catch (const std::exception& e) { /* ... */ return fail_load(); }
 
-            if (total_loaded_rows == 0) { /* ... */ return false; }
+            if (total_skipped_rows != 0) {
+                std::cerr << "Error: Rejecting dataset with " << total_skipped_rows
+                          << " invalid row(s); partial replay is not allowed." << std::endl;
+                return fail_load();
+            }
+            if (total_loaded_rows == 0) { /* ... */ return fail_load(); }
             std::cout << "DataManager: Finished processing files. Total loaded: " << total_loaded_rows << ", Total skipped: " << total_skipped_rows << "." << std::endl;
 
             // --- Sort all loaded data by timestamp ---
