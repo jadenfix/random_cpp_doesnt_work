@@ -17,10 +17,20 @@ elseif(MSVC)
 endif()
 
 # --- Find External Libraries (csv2) ---
-set(CSV2_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/csv2/include")
+set(CSV2_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/csv2/include" CACHE PATH "Directory containing csv2 headers")
 if(NOT EXISTS "${CSV2_INCLUDE_DIR}/csv2/reader.hpp")
-    message(FATAL_ERROR "csv2 header 'reader.hpp' not found at expected location: ${CSV2_INCLUDE_DIR}/csv2/\n"
-                        "Please ensure the csv2 library is correctly placed in 'external/csv2/include/csv2/'")
+    # The old gitlink has no .gitmodules entry. Fetch the same pinned revision
+    # on a clean checkout; offline builders can supply CSV2_INCLUDE_DIR.
+    include(FetchContent)
+    FetchContent_Declare(csv2
+        GIT_REPOSITORY https://github.com/p-ranav/csv2.git
+        GIT_TAG 4f3c41db6457465e94b92b91fc560b911c16a16a
+    )
+    FetchContent_GetProperties(csv2)
+    if(NOT csv2_POPULATED)
+        FetchContent_Populate(csv2)
+    endif()
+    set(CSV2_INCLUDE_DIR "${csv2_SOURCE_DIR}/include")
 endif()
 message(STATUS "Found csv2 headers at: ${CSV2_INCLUDE_DIR}")
 
@@ -32,9 +42,8 @@ set(SOURCES
     src/DataManager.cpp
     src/Portfolio.cpp
     src/ExecutionSimulator.cpp
-    src/DRLStrategy.cpp
-    src/FeatureCalculator.cpp   # Keep even if empty
-    src/DRLInferenceEngine.cpp  # Keep even if empty
+    # The DRL prototype is not used by main and depends on missing interfaces.
+    # Keep it out of the runnable traditional-strategy target.
 )
 
 # --- Executable Definition ---
@@ -45,7 +54,7 @@ add_executable(${PROJECT_NAME} ${SOURCES})
 # NOW specify include directories for the defined target
 target_include_directories(${PROJECT_NAME} PUBLIC # Using PUBLIC makes these includes available if other targets link to this one
     "${CMAKE_CURRENT_SOURCE_DIR}/include"
-    "${CMAKE_CURRENT_SOURCE_DIR}/external/csv2/include"
+    "${CSV2_INCLUDE_DIR}"
 )
 
 # --- External Library Placeholders ---
@@ -61,3 +70,13 @@ endif()
 # --- Final Messages ---
 message(STATUS "Project Name: ${PROJECT_NAME}")
 message(STATUS "Configuring Build for Target: ${PROJECT_NAME}")
+
+include(CTest)
+if(BUILD_TESTING)
+    find_package(Python3 COMPONENTS Interpreter)
+    if(Python3_Interpreter_FOUND)
+        add_test(NAME backtester_smoke
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/smoke.py"
+                    "$<TARGET_FILE:${PROJECT_NAME}>")
+    endif()
+endif()
