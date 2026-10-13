@@ -37,7 +37,7 @@ int main(int argc, char* argv[]) {
     std::cout << "--- HFT Backtesting System - Comprehensive Multi-Strategy & Multi-Dataset Run ---" << std::endl;
 
     // --- Configuration ---
-    std::string data_base_dir = "../data";
+    std::string data_base_dir = argc > 1 ? argv[1] : "data";
     double initial_cash = 100000.0; // <-- Variable name is initial_cash
 
     // --- Define Datasets to Test ---
@@ -199,7 +199,11 @@ int main(int argc, char* argv[]) {
 
     // --- Print Combined Comparison Table ---
     if (!all_results.empty()) { /* ... Printing logic ... */ }
-    else { /* ... no results ... */ }
+    else {
+        std::cerr << "ERROR: No backtests completed. Check the dataset path and CSV input."
+                  << std::endl;
+        return 1;
+    }
 
 
     std::cout << "\n--- Comprehensive Run Invocation Complete ---" << std::endl;
