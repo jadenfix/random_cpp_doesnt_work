@@ -29,3 +29,11 @@ crypto data, as well as the M/D/YY dates used by older exports. The smoke test
 replays the first three real BTC rows from `data/2024_only/btc_2024_data.csv`
 and verifies that an absent dataset returns failure. It validates the pipeline,
 not strategy profitability or the incomplete DRL prototype.
+
+Each CSV now supplies its own column mapping. Files in the same dataset may
+reorder columns or include additional numeric fields; price and timestamp
+columns are read from that file's header. Empty or duplicate column names and
+missing required date/time/close columns reject the load. The additional CTest
+case checks six schema scenarios through the production reader and runs the
+backtester on the valid two-file cases. It does not validate strategy returns
+or all malformed numeric/date inputs.

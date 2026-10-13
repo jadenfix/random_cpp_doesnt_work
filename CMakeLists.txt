@@ -75,8 +75,14 @@ include(CTest)
 if(BUILD_TESTING)
     find_package(Python3 COMPONENTS Interpreter)
     if(Python3_Interpreter_FOUND)
+        add_executable(csv_data_manager_probe tests/data_manager_probe.cpp src/DataManager.cpp)
+        target_include_directories(csv_data_manager_probe PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}/include" "${CSV2_INCLUDE_DIR}")
         add_test(NAME backtester_smoke
             COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/smoke.py"
                     "$<TARGET_FILE:${PROJECT_NAME}>")
+        add_test(NAME csv_file_headers
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/csv_headers.py"
+                    "$<TARGET_FILE:csv_data_manager_probe>" "$<TARGET_FILE:${PROJECT_NAME}>")
     endif()
 endif()
