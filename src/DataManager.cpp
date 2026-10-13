@@ -48,7 +48,7 @@ namespace Backtester {
             std::chrono::time_point<std::chrono::system_clock> timestamp;
 
             // --- Define format string outside try block ---
-            const char* timestamp_format = "%m/%d/%y %H:%M:%S"; // Format for M/D/YY H:MM:SS
+            const char* timestamp_format = "%m/%d/%y %H:%M:%S";
 
             // --- Parse Timestamp ---
             if (header_map_.empty() || !header_map_.count("date_only") || !header_map_.count("time_only")) { // Check required headers
@@ -62,6 +62,12 @@ namespace Backtester {
             }
             const std::string& dateStr = cells[date_idx];
             const std::string& timeStr = cells[time_idx];
+
+            // The committed crypto CSVs use ISO dates; older stock exports
+            // use M/D/YY. Choose the format from the date representation.
+            if (dateStr.size() == 10 && dateStr[4] == '-' && dateStr[7] == '-') {
+                timestamp_format = "%Y-%m-%d %H:%M:%S";
+            }
 
             std::tm tm = {};
             std::string datetime_str = dateStr + " " + timeStr;
@@ -164,7 +170,7 @@ namespace Backtester {
                               std::string current_symbol = getSymbolFromFilename(file_path);
                               std::cout << "  --> Processing file: " << file_path.filename().string() << " for symbol: " << current_symbol << std::endl;
 
-                              csv2::Reader<csv2::delimiter<'\t'>, // Assuming TAB delimiter
+                              csv2::Reader<csv2::delimiter<','>,
                                            csv2::quote_character<'"'>,
                                            csv2::first_row_is_header<true>,
                                            csv2::trim_policy::trim_whitespace> csv_reader;
