@@ -151,7 +151,6 @@ namespace Backtester {
             all_parsed_data_.clear();
             header_map_.clear();
             header_names_.clear();
-            bool first_file_processed = false;
             long total_loaded_rows = 0;
             long total_skipped_rows = 0;
 
@@ -178,41 +177,34 @@ namespace Backtester {
                               if (!csv_reader.mmap(file_path.string())) { /* ... skip ... */ continue; }
                               if (csv_reader.rows() == 0) { /* ... skip ... */ continue; }
 
-                              // --- Header Handling ---
-                              size_t current_file_header_count = 0;
-                              if (!first_file_processed) {
-                                  header_map_.clear(); header_names_.clear();
-                                  try {
-                                       const auto& header = csv_reader.header();
-                                       for (const auto& cell : header) {
-                                            std::string col_name; cell.read_value(col_name);
-                                            header_names_.push_back(col_name); header_map_[col_name] = current_file_header_count++;
-                                       }
-                                       // --- Check for date_only, time_only, close (case insensitive) ---
-                                       bool has_date = header_map_.count("date_only");
-                                       bool has_time = header_map_.count("time_only");
-                                       bool has_close = header_map_.count("Close") || header_map_.count("close");
-                                       if (!has_date || !has_time || !has_close) {
-                                            std::cerr << "Error: First CSV file '" << file_path.filename().string() << "' is missing required 'date_only', 'time_only', and 'Close'/'close' columns. Aborting load." << std::endl;
-                                            return false;
-                                       }
-                                       first_file_processed = true;
-                                       std::cout << "      Header processed (" << header_names_.size() << " columns). Assuming consistent header." << std::endl;
-                                  } catch (const std::exception& header_ex) { /* ... abort ... */ return false; }
-                              } else {
-                                  // Check consistency
-                                   size_t temp_count = 0;
-                                   try {
-                                        const auto& header = csv_reader.header();
-                                        for (const auto& cell : header) { (void)cell; temp_count++; } // <<< CORRECTED: Suppress warning
-                                   } catch (...) { /* Ignore count error */ }
-                                   current_file_header_count = temp_count; // Assign count
-                                   if (current_file_header_count != header_names_.size()) {
-                                       std::cerr << "      Warning: Header column count mismatch in file '" << file_path.filename().string() << "'. Skipping file." << std::endl;
-                                       continue;
-                                   }
-                              } // End header handling
-
+                              // Each file owns its column mapping. Equal column counts
+                              // do not imply equal order or meaning across symbols.
+                              header_map_.clear();
+                              header_names_.clear();
+                              try {
+                                  for (const auto& cell : csv_reader.header()) {
+                                      std::string name;
+                                      cell.read_value(name);
+                                      if (name.empty() || !header_map_.emplace(name, header_names_.size()).second) {
+                                          std::cerr << "Error: CSV file '" << file_path.filename().string()
+                                                    << "' has an empty or duplicate column name. Aborting load." << std::endl;
+                                          return false;
+                                      }
+                                      header_names_.push_back(name);
+                                  }
+                                  if (!header_map_.count("date_only") || !header_map_.count("time_only") ||
+                                      (!header_map_.count("Close") && !header_map_.count("close"))) {
+                                      std::cerr << "Error: CSV file '" << file_path.filename().string()
+                                                << "' is missing required 'date_only', 'time_only', and 'Close'/'close' columns. Aborting load." << std::endl;
+                                      return false;
+                                  }
+                              } catch (const std::exception& error) {
+                                  std::cerr << "Error: Could not read CSV header in '"
+                                            << file_path.filename().string() << "': " << error.what() << std::endl;
+                                  return false;
+                              }
+                              std::cout << "      Header processed (" << header_names_.size()
+                                        << " columns) for this file." << std::endl;
 
                               // --- Load and Parse Rows ---
                               size_t file_rows_parsed = 0;
